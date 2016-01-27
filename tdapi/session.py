@@ -3,8 +3,8 @@
 
 import os, time, requests, json, re, codecs, logging
 
-
 class ToodledoAPI(object):
+
 
     _SERVICE_URL = 'api.toodledo.com/3'
     _SESSION_FILE = '~/.tdapi.oauth2'
@@ -25,15 +25,8 @@ class ToodledoAPI(object):
 
         return ToodledoAPI._session
 
-    @staticmethod
-    def hide_password(msg):
-        if msg:
-            msg = re.sub('password=.*&', 'password=*****&', msg, re.IGNORECASE)
-        return msg
-
     def __init__(self, session='~/.tdapi.oauth2', cache='~/.tdapi.cache', tasks_cache='~/.tdapi.tasks',
                  client_id=None, client_secret=None, logger=None):
-
 
 # region Logging
         from pyutils import get_logger, LogAdapter
@@ -41,7 +34,7 @@ class ToodledoAPI(object):
             self._logger = get_logger('tdapi', 'DEBUG')
         else:
             self._logger = logger
-        self._adapter = LogAdapter(self._logger, {'package': 'tdapi', 'callback': ToodledoAPI.hide_password})
+        self._adapter = LogAdapter(self._logger, {'package': 'tdapi'})
 # endregion
 
         self._client_id = client_id or os.environ.get('TOODLEDO_CLIENT_ID')
@@ -59,12 +52,18 @@ class ToodledoAPI(object):
         self._offline = None
 
         self._account = None
-        self._folders = None
-        self._contexts = None
-        self._goals = None
-        self._locations = None
+        self._lists = None
         self._tasks = None
 
+        from tdapi import ToodledoFolders, ToodledoContexts, ToodledoGoals, ToodledoLocations
+        from tdapi import ToodledoFolder, ToodledoContext, ToodledoGoal, ToodledoLocation
+
+        self._class_map = {'folders': {'collection': ToodledoFolders, 'item': ToodledoFolder, 'auto': True},
+                           'contexts': {'collection': ToodledoContexts, 'item': ToodledoContext, 'auto': True},
+                           'goals': {'collection': ToodledoGoals, 'item': ToodledoGoal, 'auto': True},
+                           'locations': {'collection': ToodledoLocations, 'item': ToodledoLocation, 'auto': True}}
+
+        # load cache files from disk
         for parm in ['session', 'cache', 'tasks_cache']:
             ref = eval(parm)
             if ref is not None:
@@ -76,7 +75,6 @@ class ToodledoAPI(object):
                         with codecs.open(os.path.expanduser(ref), 'r', encoding='utf-8') as fh:
                             self.__dict__['_' + parm] = json.load(fh)
 
-# region Default properties
     @property
     def logger(self):return self._adapter
 
@@ -88,7 +86,6 @@ class ToodledoAPI(object):
 
     @property
     def online(self): return self._offline == False
-# endregion
 
     @property
     def access_token(self):
@@ -102,21 +99,39 @@ class ToodledoAPI(object):
     def expired(self):
         return bool((int(time.time()) - self._session.get('time_stamp',0)) > self._session.get('expires_in', 0))
 
+    #################################
+    # Session collection properties #
+    #################################
+
     @property
     def account(self):
-        from tdapi import ToodledoAccount
         if self._account is None:
-            self._account = ToodledoAccount(self._request('account', 'get'), self)
+            self._account = self._get_account_info()
         return self._account
 
     @property
     def tasks(self):
-        from tdapi import ToodledoTasks, ToodledoTask
         if self._tasks is None:
-            if self._tasks_cache is None:
-                self._update_tasks_cache()
+            self._update_tasks_cache()
+            from tdapi import ToodledoTasks
             self._tasks = ToodledoTasks(self._tasks_cache, self)
         return self._tasks
+
+    @property
+    def folders(self): return self._lists.get('folders')
+
+    @property
+    def contexts(self): return self._lists.get('contexts')
+
+    @property
+    def goals(self): return self._lists.get('goals')
+
+    @property
+    def locations(self): return self._lists.get('locations')
+
+    #######################
+    # Generate OAuth2 URL #
+    #######################
 
     def _authorize(self):
         url = 'https://%s/account/authorize.php' % (ToodledoAPI._SERVICE_URL)
@@ -133,14 +148,246 @@ class ToodledoAPI(object):
             with codecs.open(os.path.expanduser(self._session_file), 'w', encoding='utf-8') as fp:
                 json.dump(self._session, fp, indent=4, ensure_ascii=False, encoding='utf-8')
 
+    ##########################
+    # Tasks cache operations #
+    ##########################
+
+    def update_cache(self, reset=False):
+        if reset:
+            self._cache = None
+            self._tasks_cache = None
+            for fn in [self._cache_file, self._tasks_cache_file]:
+                fn = os.path.expanduser(fn)
+                if os.path.isfile(fn):
+                    os.remove(fn)
+        self._update_lists_cache()
+        self._update_tasks_cache()
+
+    def end_session(self):
+        self._update_lists()
+        self._update_tasks()
+
+    ###############################
+    # High level tasks operations #
+    ###############################
+
+    def get_tasks(self, folder=None):
+        tasks = self.tasks
+        if tasks is not None:
+            if folder:
+                if self.folders.get(folder):
+                    id = self.folders[folder].get('id')
+                    if id:
+                        tasks._filter = lambda bean: bean['folder'] == id
+                else:
+                    self.logger.error('Invalid toodle folder [%s]' % (folder))
+
+# region Test filter evaluation
+                # if isinstance(folder, dict):
+                #     key = folder.keys()[0]
+                #     val = folder[key]
+                #     tasks._filter = lambda bean: bean[key] == val
+                # elif isinstance(folder, str):
+                #     tasks._filter = eval(folder)
+                # else:
+                #     tasks._filter = folder
+# endregion
+        return tasks
+
+    def get_task(self, id):
+        return self.tasks[id]
+
+    def delete_task(self, id):
+        return self.tasks.delete(id)
+
+    def create_task(self, **kwargs):
+        from tdapi import ToodledoTask
+        todo = ToodledoTask(**kwargs)
+        return self.tasks.add(todo)
+
+    ###############################
+    # High level lists operations #
+    ###############################
+
+    def get_list_item(self, list, item, auto=None):
+        from tdapi import ToodledoFolder, ToodledoContext, ToodledoGoal, ToodledoLocation
+        if self._lists[list].get(item):
+            return self._lists[list][item]
+        else:
+            if auto is None:
+                auto = self._class_map[list]['auto']
+            if auto:
+                return self._lists[list].add(self._class_map[list]['item'](name=item))
+        return None
+
+    def create_list_item(self, list, **kwargs):
+        item = self._class_map[list]['item'](**kwargs)
+        return self._lists[list].add(item)
+
+    def delete_list_item(self, list, id):
+        return self._lists[list].add(id)
+
+    ###########################################
+    # Update toodledo server from local cache #
+    ###########################################
+
+    def _check_list_id(self, data):
+        for key in ['folder', 'context', 'goal', 'location']:
+            list = key + 's'
+            if data.get(key) and isinstance(data[key], str):
+                if self._lists[list]._uuid_map.get(data[key]):
+                    data[key] = self._lists[list]._uuid_map[data[key]]
+        return data
+
+    def _update_lists(self):
+
+        for list in self._class_map.keys():
+
+            self._lists[list]._uuid_map = {}
+
+            for key in self._lists[list]._deleted.keys():
+                result = self._delete_item(list, key)
+
+            for id, bean in self._lists[list]._modified.iteritems():
+                result = self._edit_item(list, bean.update_data)
+                if result:
+                    bean.data(result[0])
+
+            for uuid, bean in self._lists[list]._created.iteritems():
+                result = self._add_item(list, bean.bean_data)
+                if result:
+                    # update with server response
+                    bean.data(result[0])
+                    self._lists[list]._uuid_map[uuid] = bean.id
+
+    def _update_tasks(self):
+
+        if self._tasks:
+
+            # process deleted task from cache
+            if self._tasks._deleted:
+                result = self._delete_tasks(self.tasks._deleted.keys())
+
+            # update modified tasks from cache
+            data = []
+            for uuid,bean in self._tasks._modified.iteritems():
+                data.append(self._check_list_id(bean.update_data))
+            if len(data) > 0:
+                result = self._edit_tasks(data)
+                if result:
+                    index = 0
+                    for uuid, bean in self._tasks._created.iteritems():
+                        bean.modified = result[index].get('modified')
+                        index += 1
+
+            # create new tasks from ordered dict
+            data = []
+            for uuid,bean in self._tasks._created.iteritems():
+                data.append(self._check_list_id(bean.bean_data))
+            if len(data) > 0:
+                result = self._add_tasks(data)
+                if result:
+                    index = 0
+                    for uuid, bean in self._tasks._created.iteritems():
+                        bean.id = result[index].get('id')
+                        bean.modified = result[index].get('modified')
+                        index += 1
+                        # cleanup _modified list because of bean update
+                        if self._tasks._modified.get(bean.id):
+                            del(self._tasks._modified[bean.id])
+
+    #############################################
+    # Update cache from toodledo server changes #
+    #############################################
+
+    def _get_account_info(self):
+        from tdapi import ToodledoAccount
+        return ToodledoAccount(self._request('account', 'get'), self)
+
+    def _update_lists_cache(self):
+
+        if self._lists is None: self._lists = {}
+
+        if self._account is None:
+            self._account = self._get_account_info()
+
+        from tdapi import ToodledoFolders, ToodledoContexts, ToodledoGoals, ToodledoLocations
+        for list in [ToodledoFolders, ToodledoContexts, ToodledoGoals, ToodledoLocations]:
+
+            if self._cache is not None:
+                if self._cache.get(list.MODULE):
+                    if self._cache[list.MODULE].get('lastedit'):
+                        if self._cache[list.MODULE]['lastedit'] >= self._account[list.LASTEDIT]:
+                            self._lists[list.MODULE] = list(self._cache[list.MODULE], self)
+                            # self.__dict__['_' + list.MODULE] = list(self._cache[list.MODULE], self)
+                            continue
+
+            if self._cache is None: self._cache = {}
+            if self._cache.get(list.MODULE) is None: self._cache[list.MODULE] = {}
+            self._cache[list.MODULE]['data'] = self._request(list.MODULE, 'get')
+            self._cache[list.MODULE]['lastedit'] = self._account[list.LASTEDIT]
+            self._lists[list.MODULE] = list(self._cache[list.MODULE], self)
+            # self.__dict__['_' + list.MODULE] = list(self._cache[list.MODULE], self)
+
+        if self._cache_file is not None:
+           with codecs.open(os.path.expanduser(self._cache_file), 'w', encoding='utf-8') as fp:
+                json.dump(self._cache, fp, indent=4, ensure_ascii=False, encoding='utf-8')
+
     def _update_tasks_cache(self):
 
-        from tdapi import ToodledoTasks, ToodledoTask
-        data = self._request('tasks', 'get', params={'fields': ','.join(ToodledoTask.fields('all'))})
+        from tdapi import ToodledoTask
+
+        data = None
+
+        if self._tasks_cache is None:
+            data = self._request('tasks', 'get', params={'fields': ','.join(ToodledoTask.fields('all'))})
+        else:
+            if self._tasks_cache['lastedit'] < self.account.lastedit_task:
+
+                deleted = {}
+                response = self._request('tasks', 'deleted', params={'after': self._tasks_cache['lastedit']})
+                if response and len(response) > 1:
+                    num_deleted = response[0].get('num')
+                    for item in response[1:]:
+                        if item.get('id'):
+                            deleted[item['id']] = item
+
+                modified = {}
+                response = self._request('tasks', 'get', params={'fields': ','.join(ToodledoTask.fields('all')),
+                                                                 'after': self._tasks_cache['lastedit']})
+
+                if response and len(response) > 1:
+                    num_modified = response[0].get('num')
+                    for item in response[1:]:
+                        if item.get('id'):
+                            modified[item['id']] = item
+
+                data = ['SKIP']
+
+                if self._tasks_cache.get('data') and isinstance(self._tasks_cache['data'], list):
+                    # check modified and deleted items
+                    for item in self._tasks_cache['data']:
+                        if item.get('id'):
+                            id = item['id']
+                            if id in deleted:
+                                continue
+                            if id in modified:
+                                data.append(modified[id])
+                                del(modified[id])
+                                continue
+                            data.append(item)
+                    # add new items
+                    for id, item in modified.iteritems():
+                        data.append(item)
+
         if data is not None:
             self._tasks_cache = {'lastedit': self.account.lastedit_task, 'data': data[1:]}
             with codecs.open(os.path.expanduser(self._tasks_cache_file), 'w', encoding='utf-8') as fp:
                 json.dump(self._tasks_cache, fp, indent=4, ensure_ascii=False, encoding='utf-8')
+
+    ##################################
+    # Low level web service requests #
+    ##################################
 
     def _response(self, response):
         """
@@ -187,6 +434,7 @@ class ToodledoAPI(object):
             url = self._url(module, action)
             params = params=self._params(params)
             if data is not None:
+                self.logger.debug('Request body: %s' % (data))
                 response = requests.post(url, params=params, data=data)
             else:
                 response = requests.get(url, params=params)
@@ -201,92 +449,74 @@ class ToodledoAPI(object):
         self._offline = False
         return self._response(response)
 
-    def update_cache(self):
+    ####################################
+    # Low level tasks service requests #
+    ####################################
 
-        if self._account is None:
-            self._account = self.get_account_info()
-
-        from tdapi import ToodledoFolders, ToodledoContexts, ToodledoGoals, ToodledoLocations
-        for list in [ToodledoFolders, ToodledoContexts, ToodledoGoals, ToodledoLocations]:
-
-            if self._cache is not None:
-                if self._cache.get(list.MODULE):
-                    if self._cache[list.MODULE].get('lastedit'):
-                        if self._cache[list.MODULE]['lastedit'] >= self._account[list.LASTEDIT]:
-                            self.__dict__['_' + list.MODULE] = list(self._cache[list.MODULE], self)
-                            continue
-
-            if self._cache is None: self._cache = {}
-            if self._cache.get(list.MODULE) is None: self._cache[list.MODULE] = {}
-            self._cache[list.MODULE]['data'] = self._request(list.MODULE, 'get')
-            self._cache[list.MODULE]['lastedit'] = self._account[list.LASTEDIT]
-            self.__dict__['_' + list.MODULE] = list(self._cache[list.MODULE], self)
-
-        if self._cache_file is not None:
-           with codecs.open(os.path.expanduser(self._cache_file), 'w', encoding='utf-8') as fp:
-                json.dump(self._cache, fp, indent=4, ensure_ascii=False, encoding='utf-8')
-
-    def get_account_info(self):
-        from tdapi import ToodledoAccount
-        return ToodledoAccount(self._request('account', 'get'), self)
-
-    def get_folders(self):
-        from tdapi import ToodledoFolders
-        data = self._request('folders', 'get')
-        return ToodledoFolders(data, self)
-
-    def get_tasks(self, **kwargs):
+    def _get_tasks(self, **kwargs):
         from tdapi import ToodledoTasks
         return ToodledoTasks(self._request('tasks', 'get', params=kwargs), self)
 
-    def get_task(self, id, **kwargs):
+    def _get_task(self, id, **kwargs):
         from tdapi import ToodledoTask
         kwargs['id'] = id
-        #fields=ToodledoTask.fields('all')
+        # fields=ToodledoTask.fields('all')
         data = self._request('tasks', 'get', params=kwargs)
         return ToodledoTask(data[1], self)
 
-    def delete_task(self, id):
-        from tdapi import ToodledoTask
-        task = self.get_task(id)
-        task.delete()
+    def _delete_tasks(self, id_list):
+        if isinstance(id_list, str):
+            id_list = list(id_list.split(','))
+        else:
+            id_list = list(map(lambda i: str(i), id_list))
+        tasks = json.dumps(id_list)
+        result = self._request('tasks', 'delete', data={'tasks': tasks})
+        return result
 
-    def create_task(self, task=None, **kwargs):
+    def _edit_tasks(self, task_list):
+        tasks = json.dumps(task_list, encoding='utf-8', ensure_ascii=False)
+        result = self._request('tasks', 'edit', data={'tasks': tasks})
+        return result
 
-        return task
-        pass
+    def _add_tasks(self, task_list):
+        tasks = json.dumps(task_list, encoding='utf-8', ensure_ascii=False)
+        result = self._request('tasks', 'add', data={'tasks': tasks})
+        return result
 
-    def update_task(self, task):
-        return task
-        pass
+    ##############################
+    # Low level lists operations #
+    ##############################
+
+    def _get_list_items(self, list):
+        result = self._request(list, 'get')
+        return result
+
+    def _get_list_items(self, list):
+        # from tdapi import ToodledoFolders, ToodledoContexts, ToodledoGoals, ToodledoLocations
+        data = self._request(list, 'get')
+        return self._class_map[list]['collection'](data, self)
+
+    def _delete_item(self, list, id):
+        result = self._request(list, 'delete', data={'id': id})
+        return result
+
+    def _edit_item(self, list, data):
+        result = self._request(list, 'edit', data=data)
+        return result
+
+    def _add_item(self, list, data):
+        result = self._request(list, 'add', data=data)
+        return result
 
 # region __Main__
-
 if __name__ == '__main__':
 
     from tdapi import *
 
-    toodledo = ToodledoAPI.get_session()
-    print toodledo.account.email
+    td = ToodledoAPI.get_session()
+    print td.account.email
 
     exit(0)
-
-    #account =  toodledo.get_account_info()
-    #print account
-
-    folders = toodledo.get_folders()
-    for folder in folders:
-        print folder
-
-    task = toodledo.get_tasks(id=23774181, fields=ToodledoTask.fields('all'))[0]
-    task = toodledo.get_task(23774181)
-
-    # task.note = 'Task note'
-    # task.tag = '[Tag]'
-    # task.update()
-
-    exit(0)
-
 # endregion
 
 

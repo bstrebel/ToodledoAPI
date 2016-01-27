@@ -10,9 +10,16 @@ class ToodledoGoal(ToodledoBean):
     DEFAULT = map
     MODULE = 'goals'
 
-    def __init__(self, data=None, tdapi=None, parent=None):
+    LEVELS = {'lifetime': 0,
+              'long-term': 1,
+              'short-term': 2}
 
-        ToodledoBean.__init__(self, data, tdapi, parent)
+    DEFAULT_LEVEL = 2
+
+    def __init__(self, data=None, tdapi=None, parent=None, **kwargs):
+        ToodledoBean.__init__(self, data, tdapi, parent, **kwargs)
+        if self.level is None:
+            self.level = self.DEFAULT_LEVEL
 
 class ToodledoGoals(ToodledoBeans):
 
