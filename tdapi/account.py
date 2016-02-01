@@ -15,9 +15,16 @@ class ToodledoAccount(ToodledoBean):
 
     def __init__(self, data=None, tdapi=None):
 
-        # create bean class map by data
+        # create bean class map by data returned
         if data is not None:
-            for key in data:
-                ToodledoAccount.MAP[key] = True
+            for key,value in data.iteritems():
+                default = None
+                if isinstance(value, unicode):
+                    default = u''
+                elif isinstance(value, str):
+                    default = ''
+                else:
+                    default = 0
+                ToodledoAccount.MAP[key] = {'default': default, 'type': type(value), 'used': True}
 
         ToodledoBean.__init__(self, data, tdapi)

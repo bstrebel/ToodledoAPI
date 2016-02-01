@@ -83,6 +83,9 @@ class ToodledoBean(object):
         return self
 
     @property
+    def _logger(self): return self._tdapi.logger
+
+    @property
     def _id(self): return self.id or self._uuid
 
     @property
@@ -103,7 +106,7 @@ class ToodledoBean(object):
         get list of attributes initialized by the last query
         :return: array of field names from the last get() query
         '''
-        fields = filter(lambda f: self.MAP[f] is not None, self.all_fields)
+        fields = filter(lambda f: self.MAP[f].get('used', False), self.all_fields)
         return fields
 
     @property
@@ -160,6 +163,7 @@ class ToodledoBean(object):
             self.__dict__['_data'] = {}
 
         if key in ['folder', 'context', 'goal', 'location']:
+            self._logger.debug('Processing special attribute [%s]' % (key))
             value = self._tdapi.get_list_item(key + 's', value)._id
 
             # call = getattr(self._tdapi, 'get_' + key)
@@ -172,6 +176,7 @@ class ToodledoBean(object):
 
             # modify existing attribute
             if self.__dict__['_data'][key] != value:
+                self._logger.debug('Mofify bean attribute [%s]' % (key))
                 if self.__dict__['_modified'] is None:
                     self.__dict__['_modified'] = {}
                 self.__dict__['_modified'][key] = True
@@ -240,7 +245,7 @@ class ToodledoBeans(object):
 
         if isinstance(data, dict):
             # loaded from cache ...
-            if data.get('data'):
+            if data.get('data') is not None:
                 self._lastedit = data.get('lastedit')
                 data = data.get('data')
 

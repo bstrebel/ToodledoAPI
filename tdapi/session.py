@@ -164,7 +164,10 @@ class ToodledoAPI(object):
         self._update_tasks_cache()
 
     def end_session(self):
-        self._update_lists()
+        if self._update_lists():
+            # allow creation of new list entries
+            # in the toodledo server database
+            time.sleep(5)
         self._update_tasks()
 
     ###############################
@@ -211,6 +214,8 @@ class ToodledoAPI(object):
 
     def get_list_item(self, list, item, auto=None):
         from tdapi import ToodledoFolder, ToodledoContext, ToodledoGoal, ToodledoLocation
+        if isinstance(item, self._class_map[list]['item']):
+            return item
         if self._lists[list].get(item):
             return self._lists[list][item]
         else:
@@ -241,24 +246,37 @@ class ToodledoAPI(object):
 
     def _update_lists(self):
 
+        delay = False
         for list in self._class_map.keys():
 
             self._lists[list]._uuid_map = {}
 
             for key in self._lists[list]._deleted.keys():
+                self.logger.debug('Delete %s item %s' % (list, key))
                 result = self._delete_item(list, key)
 
-            for id, bean in self._lists[list]._modified.iteritems():
-                result = self._edit_item(list, bean.update_data)
-                if result:
-                    bean.data(result[0])
-
             for uuid, bean in self._lists[list]._created.iteritems():
+                self.logger.debug('Create %s item [%s]: %s' % (list, uuid, bean.name))
                 result = self._add_item(list, bean.bean_data)
                 if result:
                     # update with server response
                     bean.data(result[0])
+                    #self.logger.debug('Created: %s' % (bean._data))
+                    # add entry to _uuid_map
                     self._lists[list]._uuid_map[uuid] = bean.id
+                    self.logger.debug('Add entry to %s uuid_map: [%s] => [%s]' % (list, uuid, bean.id))
+                    delay = True
+
+            for id, bean in self._lists[list]._modified.iteritems():
+                if id in self._lists[list]._uuid_map:
+                    self.logger.debug('Update skipped for %s item [%s]: %s', list, id, bean.name)
+                else:
+                    self.logger.debug('Update %s item %s: %s' % (list, id, bean.name))
+                    result = self._edit_item(list, bean.update_data)
+                    if result:
+                        bean.data(result[0])
+
+        return delay
 
     def _update_tasks(self):
 
@@ -266,35 +284,71 @@ class ToodledoAPI(object):
 
             # process deleted task from cache
             if self._tasks._deleted:
+                self.logger.debug('Delete tasks: %s' % (self.tasks._deleted.keys()))
                 result = self._delete_tasks(self.tasks._deleted.keys())
-
-            # update modified tasks from cache
-            data = []
-            for uuid,bean in self._tasks._modified.iteritems():
-                data.append(self._check_list_id(bean.update_data))
-            if len(data) > 0:
-                result = self._edit_tasks(data)
                 if result:
-                    index = 0
-                    for uuid, bean in self._tasks._created.iteritems():
-                        bean.modified = result[index].get('modified')
-                        index += 1
+                    for entry in result:
+                        # remove deleted items from modified/created
+                        if entry.get('id'):
+                            bean_id = entry.get('id')
+                            self.logger.debug('Delete confirmed for task [%s]:' % (bean_id, self._tasks[bean_id].title))
+                            if self._tasks._modified.get(bean_id):
+                                self.logger.debug('Remove [%s] from modified hash' % (bean_id))
+                                del(self._tasks._modified[bean_id])
+                            if self._tasks._created.get(bean_id):
+                                self.logger.debug('Remoe [%s] from created hash' % (bean_id))
+                                del(self._tasks._created[bean_id])
+                        else:
+                            self.logger.error('Result: %s' % (result))
+
 
             # create new tasks from ordered dict
             data = []
             for uuid,bean in self._tasks._created.iteritems():
+                self.logger.debug('Create for [%s]: %s' % (uuid, bean.title))
                 data.append(self._check_list_id(bean.bean_data))
             if len(data) > 0:
                 result = self._add_tasks(data)
                 if result:
                     index = 0
                     for uuid, bean in self._tasks._created.iteritems():
-                        bean.id = result[index].get('id')
-                        bean.modified = result[index].get('modified')
+                        if result[index].get('id'):
+                            bean_id = result[index].get('id')
+                            self.logger.debug('Update [%s] with [%s]: %s' % (uuid, bean_id, result[index]))
+                            self._tasks._uuid_map[uuid] = bean_id
+                            bean.data(result[index])
+                            self.logger.debug('Created: %s' % (bean._data))
+                            #bean.id = bean_id
+                            #bean.modified = result[index].get('modified')
+                            # cleanup _modified list because of bean update (?)
+                            if self._tasks._modified.get(bean.id):
+                                del(self._tasks._modified[bean.id])
+                        else:
+                            self.logger.error('Result: %s' % (result[index]))
                         index += 1
-                        # cleanup _modified list because of bean update
-                        if self._tasks._modified.get(bean.id):
-                            del(self._tasks._modified[bean.id])
+
+            # update modified tasks from cache
+            data = []
+            for uuid,bean in self._tasks._modified.iteritems():
+                if uuid is not None:
+                    data.append(self._check_list_id(bean.update_data)) # if uuid is not None (?)
+                    self.logger.debug('Create for [%s]: %s' % (uuid, bean.name))
+                else:
+                    self.logger.warning('Skipping bogus entry in tasks._modified dict: %s' % (bean._data))
+            if len(data) > 0:
+                result = self._edit_tasks(data)
+                if result:
+                    index = 0
+                    for uuid, bean in self._tasks._modified.iteritems():
+                        if result[index].get('id'):
+                            bean_id = result[index].get('id')
+                            self.logger.debug('Update [%s] with [%s]: %s' % (uuid, bean_id, bean))
+                            bean.data(result[index])
+                            self.logger.debug('Updated: %s' % (bean._data))
+                            # bean.modified = result[index].get('modified')
+                        else:
+                            self.logger.error('Result: %s' % (result[index]))
+                        index += 1
 
     #############################################
     # Update cache from toodledo server changes #
@@ -364,7 +418,8 @@ class ToodledoAPI(object):
 
                 data = ['SKIP']
 
-                if self._tasks_cache.get('data') and isinstance(self._tasks_cache['data'], list):
+                if self._tasks_cache.get('data') is not None and isinstance(self._tasks_cache['data'], list):
+
                     # check modified and deleted items
                     for item in self._tasks_cache['data']:
                         if item.get('id'):
@@ -376,9 +431,13 @@ class ToodledoAPI(object):
                                 del(modified[id])
                                 continue
                             data.append(item)
+
                     # add new items
                     for id, item in modified.iteritems():
                         data.append(item)
+                else:
+                    self.logger.critical('Cannot update Toodledo task_cache!')
+                    raise Exception('Cannot update Toodledo task_cache!')
 
         if data is not None:
             self._tasks_cache = {'lastedit': self.account.lastedit_task, 'data': data[1:]}
@@ -453,6 +512,25 @@ class ToodledoAPI(object):
     # Low level tasks service requests #
     ####################################
 
+    def _bulk_request(self, module, operation, items, increment=50):
+
+        result = []
+        self.logger.debug('Bulk request for %d items total' % (len(items)))
+        for offset in range(0, len(items), increment):
+            last = offset+increment
+            self.logger.debug('Processing slice [%d:%d]' % (offset, last))
+            slice = items[offset:last]
+            self.logger.debug('Processing slice [%d:%d] with %d items' % (offset, last, len(slice)))
+            data = json.dumps(slice, encoding='utf-8', ensure_ascii=False)
+            sub = self._request(module, operation, data={module: data})
+            if len(slice) != len(sub):
+                self.logger.error('Bulk request returned with %d items: %s' % (len(sub), sub))
+            else:
+                self.logger.debug('Bulk request returned with %d items' % (len(sub)))
+                result.extend(sub)
+        self.logger.debug('Bulk request completed with %d items total' % (len(result)))
+        return result
+
     def _get_tasks(self, **kwargs):
         from tdapi import ToodledoTasks
         return ToodledoTasks(self._request('tasks', 'get', params=kwargs), self)
@@ -464,24 +542,34 @@ class ToodledoAPI(object):
         data = self._request('tasks', 'get', params=kwargs)
         return ToodledoTask(data[1], self)
 
-    def _delete_tasks(self, id_list):
+    def _delete_tasks(self, id_list, bulk=50):
         if isinstance(id_list, str):
             id_list = list(id_list.split(','))
         else:
             id_list = list(map(lambda i: str(i), id_list))
-        tasks = json.dumps(id_list)
-        result = self._request('tasks', 'delete', data={'tasks': tasks})
-        return result
 
-    def _edit_tasks(self, task_list):
-        tasks = json.dumps(task_list, encoding='utf-8', ensure_ascii=False)
-        result = self._request('tasks', 'edit', data={'tasks': tasks})
-        return result
+        if len(id_list) > bulk:
+            return self._bulk_request('tasks', 'delete', id_list, bulk)
+        else:
+            tasks = json.dumps(id_list)
+            result = self._request('tasks', 'delete', data={'tasks': tasks})
+            return result
 
-    def _add_tasks(self, task_list):
-        tasks = json.dumps(task_list, encoding='utf-8', ensure_ascii=False)
-        result = self._request('tasks', 'add', data={'tasks': tasks})
-        return result
+    def _edit_tasks(self, task_list, bulk=50):
+        if len(task_list) > bulk:
+            return self._bulk_request('tasks', 'edit', task_list, bulk)
+        else:
+            tasks = json.dumps(task_list, encoding='utf-8', ensure_ascii=False)
+            result = self._request('tasks', 'edit', data={'tasks': tasks})
+            return result
+
+    def _add_tasks(self, task_list, bulk=50):
+        if len(task_list) > bulk:
+            return self._bulk_request('tasks', 'add', task_list, bulk)
+        else:
+            tasks = json.dumps(task_list, encoding='utf-8', ensure_ascii=False)
+            result = self._request('tasks', 'add', data={'tasks': tasks})
+            return result
 
     ##############################
     # Low level lists operations #

@@ -1,15 +1,14 @@
 from setuptools import setup
 import re
 
-version = re.search(
-    "^__version__\s*=\s*'(.*)'",
-    open('oxapi/__init__.py').read(),
-    re.M).group(1)
+package = 'tdapi'
+
+version = re.search("^__version__\s*=\s*'(.*)'", open(package + '/__init__.py').read(), re.M).group(1)
 
 setup(
     name='ToodledoAPI',
     version=version,
-    packages=['tdapi'],
+    packages=[package],
     url='https://github.com/bstrebel/ToodledoAPI',
     license='GPL2',
     author='Bernd Strebel',

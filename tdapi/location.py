@@ -10,9 +10,8 @@ class ToodledoLocation(ToodledoBean):
     DEFAULT = map
     MODULE = 'locations'
 
-    def __init__(self, data=None, tdapi=None, parent=None):
-
-        ToodledoBean.__init__(self, data, tdapi, parent)
+    def __init__(self, data=None, tdapi=None, parent=None, **kwargs):
+        ToodledoBean.__init__(self, data, tdapi, parent, **kwargs)
 
 class ToodledoLocations(ToodledoBeans):
 
