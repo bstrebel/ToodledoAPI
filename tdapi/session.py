@@ -291,7 +291,7 @@ class ToodledoAPI(object):
                         # remove deleted items from modified/created
                         if entry.get('id'):
                             bean_id = entry.get('id')
-                            self.logger.debug('Delete confirmed for task [%s]:' % (bean_id, self._tasks[bean_id].title))
+                            self.logger.debug('Delete confirmed for task [%s]: %s' % (bean_id, self._tasks[bean_id].title))
                             if self._tasks._modified.get(bean_id):
                                 self.logger.debug('Remove [%s] from modified hash' % (bean_id))
                                 del(self._tasks._modified[bean_id])
