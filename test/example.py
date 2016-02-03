@@ -15,8 +15,8 @@ if __name__ == '__main__':
     for task in tasks:
          logger.debug('%s' % (task))
 
-    DAY = 24*60*60
-    timestamp = int(time.time())
+    # DAY = 24*60*60
+    # timestamp = int(time.time())
 
 # region Toodledo task attributes
         # id, title, modified, completed,

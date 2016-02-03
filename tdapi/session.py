@@ -5,28 +5,26 @@ import os, time, requests, json, re, codecs, logging
 
 class ToodledoAPI(object):
 
-
+    # default settings
     _SERVICE_URL = 'api.toodledo.com/3'
-    _SESSION_FILE = '~/.tdapi.oauth2'
+    _SESSION_CACHE_DIR = '~/.tdapi'
 
     _session = None
 
     @staticmethod
-    def get_session(session='~/.tdapi.oauth2', cache='~/.tdapi.cache', tasks_cache='~/.tdapi.tasks',
-                    client_id=None, client_secret=None, logger=None):
+    def get_session(cache='~/.tdapi', client_id=None, client_secret=None, logger=None):
 
         if ToodledoAPI._session is None:
 
             client_id = client_id or os.environ.get('TOODLEDO_CLIENT_ID')
             client_secret = client_secret or os.environ.get('TOODLEDO_CLIENT_SECRET')
-            ToodledoAPI._session = ToodledoAPI(session, cache, tasks_cache, client_id, client_secret, logger)
+            ToodledoAPI._session = ToodledoAPI(cache, client_id, client_secret, logger)
             if ToodledoAPI._session is not None:
                 ToodledoAPI._session.update_cache()
 
         return ToodledoAPI._session
 
-    def __init__(self, session='~/.tdapi.oauth2', cache='~/.tdapi.cache', tasks_cache='~/.tdapi.tasks',
-                 client_id=None, client_secret=None, logger=None):
+    def __init__(self, cache='~/.tdapi', client_id=None, client_secret=None, logger=None):
 
 # region Logging
         from pyutils import get_logger, LogAdapter
@@ -40,14 +38,8 @@ class ToodledoAPI(object):
         self._client_id = client_id or os.environ.get('TOODLEDO_CLIENT_ID')
         self._client_secret = client_secret or os.environ.get('TOODLEDO_CLIENT_SECRET')
 
-        self._session = None
-        self._session_file = None
-
-        self._tasks_cache = None
-        self._tasks_cache_file = None
-
-        self._cache = None
-        self._cache_file = None
+        self._cache_dir = os.path.expanduser(cache)
+        self._cache = {'session': None, 'account': None, 'lists': None, 'tasks': None}
 
         self._offline = None
 
@@ -63,23 +55,29 @@ class ToodledoAPI(object):
                            'goals': {'collection': ToodledoGoals, 'item': ToodledoGoal, 'auto': True},
                            'locations': {'collection': ToodledoLocations, 'item': ToodledoLocation, 'auto': True}}
 
-        # load cache files from disk
-        for parm in ['session', 'cache', 'tasks_cache']:
-            ref = eval(parm)
-            if ref is not None:
-                if isinstance(ref, dict):
-                    self.__dict__['_' + parm] = ref
-                else:
-                    self.__dict__['_' + parm + '_file'] = ref
-                    if os.path.isfile(os.path.expanduser(ref)):
-                        with codecs.open(os.path.expanduser(ref), 'r', encoding='utf-8') as fh:
-                            self.__dict__['_' + parm] = json.load(fh)
+        # load cache files
+        for key in self._cache:
+            fn = self.cache_file(key)
+            if os.path.isfile(fn):
+                with codecs.open(fn, 'r', encoding='utf-8') as fh:
+                    self._cache[key] = json.load(fh)
+
+    def cache_file(self, key):
+        return self._cache_dir + '/tdapi.' + key
 
     @property
     def logger(self):return self._adapter
 
-    # @property
-    # def authenticated(self): return self._access_token is not None
+    @property
+    def session(self):
+        return self._cache['session']
+
+    @session.setter
+    def session(self, value):
+        self._cache['session'] = value
+
+    @property
+    def authenticated(self): return self.access_token is not None
 
     @property
     def offline(self): return self._offline == True
@@ -89,15 +87,15 @@ class ToodledoAPI(object):
 
     @property
     def access_token(self):
-        return self._session.get('access_token') if isinstance(self._session, dict) else None
+        return self.session.get('access_token') if isinstance(self.session, dict) else None
 
     @property
     def refresh_token(self):
-        return self._session.get('refresh_token') if isinstance(self._session, dict) else None
+        return self.session.get('refresh_token') if isinstance(self.session, dict) else None
 
     @property
     def expired(self):
-        return bool((int(time.time()) - self._session.get('time_stamp',0)) > self._session.get('expires_in', 0))
+        return bool((int(time.time()) - self.session.get('time_stamp',0)) > self.session.get('expires_in', 0))
 
     #################################
     # Session collection properties #
@@ -111,10 +109,10 @@ class ToodledoAPI(object):
 
     @property
     def tasks(self):
+        from tdapi import ToodledoTasks
         if self._tasks is None:
             self._update_tasks_cache()
-            from tdapi import ToodledoTasks
-            self._tasks = ToodledoTasks(self._tasks_cache, self)
+            self._tasks = ToodledoTasks(self._cache['tasks'], self)
         return self._tasks
 
     @property
@@ -141,25 +139,28 @@ class ToodledoAPI(object):
     def _refresh(self):
         url = 'https://%s:%s@%s/account/token.php' % (self._client_id, self._client_secret, ToodledoAPI._SERVICE_URL)
         data = {'grant_type': 'refresh_token', 'refresh_token': self.refresh_token}
-        self._session = self._response(requests.post(url, data=data))
-        if self._session is not None:
-            self._session['time_stamp'] = int(time.time())
-            self.logger.debug('Refresh: %s' % (self._session))
-            with codecs.open(os.path.expanduser(self._session_file), 'w', encoding='utf-8') as fp:
-                json.dump(self._session, fp, indent=4, ensure_ascii=False, encoding='utf-8')
+        self.session = self._response(requests.post(url, data=data))
+        if self.session is not None:
+            self.session['time_stamp'] = int(time.time())
+            self.logger.debug('Refresh: %s' % (self.session))
+            with codecs.open(self.cache_file('session'), 'w', encoding='utf-8') as fp:
+                json.dump(self.session, fp, indent=4, ensure_ascii=False, encoding='utf-8')
 
     ##########################
     # Tasks cache operations #
     ##########################
 
     def update_cache(self, reset=False):
+
         if reset:
-            self._cache = None
-            self._tasks_cache = None
-            for fn in [self._cache_file, self._tasks_cache_file]:
-                fn = os.path.expanduser(fn)
+            for key in self._cache:
+                if key == 'session': continue
+                self._cache[key] = None
+                fn = self.cache_file(key)
                 if os.path.isfile(fn):
                     os.remove(fn)
+
+        self._account = self._get_account_info()
         self._update_lists_cache()
         self._update_tasks_cache()
 
@@ -356,50 +357,51 @@ class ToodledoAPI(object):
 
     def _get_account_info(self):
         from tdapi import ToodledoAccount
-        return ToodledoAccount(self._request('account', 'get'), self)
+        response = self._request('account', 'get')
+        if response:
+            self._cache['account'] = response
+            with codecs.open(self.cache_file('account'), 'w', encoding='utf-8') as fp:
+                json.dump(response, fp, indent=4, ensure_ascii=False, encoding='utf-8')
+        return ToodledoAccount(response, self)
 
     def _update_lists_cache(self):
+        
+        from tdapi import ToodledoFolders, ToodledoContexts, ToodledoGoals, ToodledoLocations
 
         if self._lists is None: self._lists = {}
+        if self._cache['lists'] is None: self._cache['lists'] = {}
+        cache = self._cache['lists']
 
-        if self._account is None:
-            self._account = self._get_account_info()
-
-        from tdapi import ToodledoFolders, ToodledoContexts, ToodledoGoals, ToodledoLocations
         for list in [ToodledoFolders, ToodledoContexts, ToodledoGoals, ToodledoLocations]:
 
-            if self._cache is not None:
-                if self._cache.get(list.MODULE):
-                    if self._cache[list.MODULE].get('lastedit'):
-                        if self._cache[list.MODULE]['lastedit'] >= self._account[list.LASTEDIT]:
-                            self._lists[list.MODULE] = list(self._cache[list.MODULE], self)
-                            # self.__dict__['_' + list.MODULE] = list(self._cache[list.MODULE], self)
-                            continue
+            if cache.get(list.MODULE):
+                if cache[list.MODULE].get('lastedit'):
+                    if cache[list.MODULE]['lastedit'] >= self.account[list.LASTEDIT]:
+                        self._lists[list.MODULE] = list(cache[list.MODULE], self)
+                        continue
 
-            if self._cache is None: self._cache = {}
-            if self._cache.get(list.MODULE) is None: self._cache[list.MODULE] = {}
-            self._cache[list.MODULE]['data'] = self._request(list.MODULE, 'get')
-            self._cache[list.MODULE]['lastedit'] = self._account[list.LASTEDIT]
-            self._lists[list.MODULE] = list(self._cache[list.MODULE], self)
-            # self.__dict__['_' + list.MODULE] = list(self._cache[list.MODULE], self)
+            if cache.get(list.MODULE) is None: cache[list.MODULE] = {}
+            cache[list.MODULE]['data'] = self._request(list.MODULE, 'get')
+            cache[list.MODULE]['lastedit'] = self.account[list.LASTEDIT]
+            self._lists[list.MODULE] = list(cache[list.MODULE], self)
 
-        if self._cache_file is not None:
-           with codecs.open(os.path.expanduser(self._cache_file), 'w', encoding='utf-8') as fp:
-                json.dump(self._cache, fp, indent=4, ensure_ascii=False, encoding='utf-8')
+        with codecs.open(self.cache_file('lists'), 'w', encoding='utf-8') as fp:
+            json.dump(cache, fp, indent=4, ensure_ascii=False, encoding='utf-8')
 
     def _update_tasks_cache(self):
 
-        from tdapi import ToodledoTask
+        from tdapi import ToodledoTasks, ToodledoTask
 
         data = None
+        cache = self._cache['tasks']
 
-        if self._tasks_cache is None:
+        if cache is None:
             data = self._request('tasks', 'get', params={'fields': ','.join(ToodledoTask.fields('all'))})
         else:
-            if self._tasks_cache['lastedit'] < self.account.lastedit_task:
+            if cache['lastedit'] < self.account.lastedit_task:
 
                 deleted = {}
-                response = self._request('tasks', 'deleted', params={'after': self._tasks_cache['lastedit']})
+                response = self._request('tasks', 'deleted', params={'after': cache['lastedit']})
                 if response and len(response) > 1:
                     num_deleted = response[0].get('num')
                     for item in response[1:]:
@@ -408,7 +410,7 @@ class ToodledoAPI(object):
 
                 modified = {}
                 response = self._request('tasks', 'get', params={'fields': ','.join(ToodledoTask.fields('all')),
-                                                                 'after': self._tasks_cache['lastedit']})
+                                                                 'after': cache['lastedit']})
 
                 if response and len(response) > 1:
                     num_modified = response[0].get('num')
@@ -418,10 +420,10 @@ class ToodledoAPI(object):
 
                 data = ['SKIP']
 
-                if self._tasks_cache.get('data') is not None and isinstance(self._tasks_cache['data'], list):
+                if cache.get('data') is not None and isinstance(cache['data'], list):
 
                     # check modified and deleted items
-                    for item in self._tasks_cache['data']:
+                    for item in cache['data']:
                         if item.get('id'):
                             id = item['id']
                             if id in deleted:
@@ -440,9 +442,10 @@ class ToodledoAPI(object):
                     raise Exception('Cannot update Toodledo task_cache!')
 
         if data is not None:
-            self._tasks_cache = {'lastedit': self.account.lastedit_task, 'data': data[1:]}
-            with codecs.open(os.path.expanduser(self._tasks_cache_file), 'w', encoding='utf-8') as fp:
-                json.dump(self._tasks_cache, fp, indent=4, ensure_ascii=False, encoding='utf-8')
+            cache = {'lastedit': self.account.lastedit_task, 'data': data[1:]}
+            self._tasks = ToodledoTasks(cache, self)
+            with codecs.open(self.cache_file('tasks'), 'w', encoding='utf-8') as fp:
+                json.dump(cache, fp, indent=4, ensure_ascii=False, encoding='utf-8')
 
     ##################################
     # Low level web service requests #
