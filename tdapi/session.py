@@ -24,6 +24,10 @@ class ToodledoAPI(object):
 
         return ToodledoAPI._session
 
+    @classmethod
+    def set_session(cls, session):
+        ToodledoAPI._session = session
+
     def __init__(self, cache='~/.tdapi', client_id=None, client_secret=None, logger=None):
 
 # region Logging
