@@ -3,14 +3,14 @@
 
 import os
 
-__version__ = '0.9.5'
+__version__ = '0.9.6'
 __license__ = 'GPL2'
 __author__ = 'Bernd Strebel'
 
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 from .exceptions import ToodledoRequestError, ToodledoError
-from .session import ToodledoAPI
+from .session import ToodledoAPI, ToodledoApiError
 from .beans import ToodledoBean, ToodledoBeans
 from .account import ToodledoAccount
 from .tasks import ToodledoTask, ToodledoTasks
@@ -21,7 +21,7 @@ from .location import ToodledoLocation, ToodledoLocations
 
 __all__ = [
 
-    'ToodledoRequestError', 'ToodledoError', 'ToodledoAPI',
+    'ToodledoRequestError', 'ToodledoError', 'ToodledoAPI', 'ToodledoApiError',
     'ToodledoBean', 'ToodledoBeans',
     'ToodledoAccount',
     'ToodledoTask', 'ToodledoTasks',

@@ -3,6 +3,10 @@
 
 import os, time, requests, json, re, codecs, logging
 
+class ToodledoApiError(Exception):
+    pass
+
+
 class ToodledoAPI(object):
 
     # default settings
@@ -39,10 +43,21 @@ class ToodledoAPI(object):
         self._adapter = LogAdapter(self._logger, {'package': 'tdapi'})
 # endregion
 
+        self._cache_dir = os.path.expanduser(cache)
+
+        if not os.path.isdir(self._cache_dir):
+            error = 'Cache directory [%s] not found!' % (self._cache_dir)
+            self.logger.critical(error)
+            raise ToodledoApiError(error)
+
+        if not os.path.isfile(self.cache_file('session')):
+            error = 'Session cache file [%s] not found!' % (self.cache_file('session'))
+            self.logger.critical(error)
+            raise ToodledoApiError(error)
+
         self._client_id = client_id or os.environ.get('TOODLEDO_CLIENT_ID')
         self._client_secret = client_secret or os.environ.get('TOODLEDO_CLIENT_SECRET')
 
-        self._cache_dir = os.path.expanduser(cache)
         self._cache = {'session': None, 'account': None, 'lists': None, 'tasks': None}
 
         self._offline = None
@@ -285,13 +300,19 @@ class ToodledoAPI(object):
 
     def _update_tasks(self):
 
+        deleted = {}
+
         if self._tasks:
+
+            self._tasks._not_deleted = {}
 
             # process deleted task from cache
             if self._tasks._deleted:
-                self.logger.debug('Delete tasks: %s' % (self.tasks._deleted.keys()))
-                result = self._delete_tasks(self.tasks._deleted.keys())
+                ids = list(self.tasks._deleted.keys())
+                self.logger.debug('Delete tasks: %s' % (ids))
+                result = self._delete_tasks(ids)
                 if result:
+                    index = 0
                     for entry in result:
                         # remove deleted items from modified/created
                         if entry.get('id'):
@@ -301,13 +322,17 @@ class ToodledoAPI(object):
                                 self.logger.debug('Remove [%s] from modified hash' % (bean_id))
                                 del(self._tasks._modified[bean_id])
                             if self._tasks._created.get(bean_id):
-                                self.logger.debug('Remoe [%s] from created hash' % (bean_id))
+                                self.logger.debug('Remove [%s] from created hash' % (bean_id))
                                 del(self._tasks._created[bean_id])
                         else:
-                            self.logger.error('Result: %s' % (result))
-
+                            # item not deleted => remove from hash
+                            self.logger.error('Result for item %s: %s' % (ids[index], result[index]))
+                            self._tasks._not_deleted[ids[index]] = self._tasks._deleted[ids[index]]
+                            del(self._tasks._deleted[ids[index]])
+                        index += 1
 
             # create new tasks from ordered dict
+            self._tasks._not_created = {}
             data = []
             for uuid,bean in self._tasks._created.iteritems():
                 self.logger.debug('Create for [%s]: %s' % (uuid, bean.title))
@@ -330,6 +355,9 @@ class ToodledoAPI(object):
                                 del(self._tasks._modified[bean.id])
                         else:
                             self.logger.error('Result: %s' % (result[index]))
+                            ### uuid = data[index].get('uuid')
+                            self._tasks._not_created = self._tasks._created[uuid]
+                            ### del(self._tasks._created[uuid])
                         index += 1
 
             # update modified tasks from cache
