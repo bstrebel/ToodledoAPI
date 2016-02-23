@@ -3,7 +3,7 @@
 
 import os
 
-__version__ = '0.9.8    '
+__version__ = '0.9.8'
 __license__ = 'GPL2'
 __author__ = 'Bernd Strebel'
 

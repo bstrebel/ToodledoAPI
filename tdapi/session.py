@@ -521,27 +521,33 @@ class ToodledoAPI(object):
         return params
 
     def _request(self, module, action, params=None, data=None):
-        try:
-            self._offline = True
-            if self.expired: self._refresh()
-            #self.logger.debug('Request call: [%s] with body %s' % (call.func_name, data))
-            url = self._url(module, action)
-            params = params=self._params(params)
-            if data is not None:
-                self.logger.debug('Request body: %s' % (data))
-                response = requests.post(url, params=params, data=data)
-            else:
-                response = requests.get(url, params=params)
-            self.logger.debug('Request url: %s' % (response.request.path_url))
+        self._offline = True
+        if self.expired:
+            self._refresh()
+        url = self._url(module, action)
+        params = params=self._params(params)
+        for retry in range(0,2):
+            try:
+                if data is not None:
+                    self.logger.debug('Request body: %s' % (data))
+                    response = requests.post(url, params=params, data=data)
+                else:
+                    response = requests.get(url, params=params)
+                self.logger.debug('Request url: %s' % (response.request.path_url))
+            except requests.exceptions.RequestException as e:
+                self.logger.error("Request exception: %s" % (e))
+                return None
             if response.status_code == 401:
                 self._refresh()
-                response = requests.get(url, params=params, data=data)
-                self.logger.debug('Request url: %s' % (response.request.path_url))
-        except requests.exceptions.RequestException as e:
-            self.logger.error("Request exception: %s" % (e))
-            return None
-        self._offline = False
-        return self._response(response)
+            else:
+                try:
+                    return self._response(response)
+                except ToodledoRequestError as e:
+                    if int(e.get('errorCode')) == 2:
+                        self._refresh()
+                    else:
+                        raise
+        return None
 
     ####################################
     # Low level tasks service requests #
